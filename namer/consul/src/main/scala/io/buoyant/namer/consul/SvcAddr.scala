@@ -64,7 +64,14 @@ private[consul] object SvcAddr {
             // certain failures (with backoff).
             state() = Addr.Failed(e)
             stats.errors.incr()
-            Future.exception(e)
+            log.debug("consul connection failed: %s", key.name)
+
+            e match {
+              case Failure(Some(err: ConnectionFailedException)) =>
+                loop(index0)
+              case _ =>
+                Future.exception(e)
+            }
 
           case Return(v1.Indexed(_, None)) =>
             // If consul doesn't return an index, we're in bad shape.

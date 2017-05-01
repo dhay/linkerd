@@ -405,6 +405,59 @@ class ConsulNamerTest extends FunSuite with Awaits {
     ))
   }
 
+  test("Name retries on ConnectionFailedException") {
+    val failToConnect = new Promise[Unit]
+    val establishConnections = new Promise[Unit]
+
+    @volatile
+    var numCalls = 0
+    class TestApi extends CatalogApi(null, "/v1") {
+      override def serviceMap(
+        datacenter: Option[String] = None,
+        blockingIndex: Option[String] = None,
+        consistency: Option[ConsistencyMode] = None,
+        retry: Boolean = false
+      ): Future[Indexed[Map[String, Seq[String]]]] = numCalls match {
+        case 0 =>
+          numCalls += 1
+          failToConnect before Future.exception(Failure(new ConnectionFailedException))
+        case _ =>
+          numCalls += 1
+          val rsp = Map("consul" -> Seq(), "servicename" -> Seq("master", "staging"))
+          establishConnections before Future.value(Indexed(rsp, Some("1")))
+      }
+
+      override def serviceNodes(
+        serviceName: String,
+        datacenter: Option[String],
+        tag: Option[String] = None,
+        blockingIndex: Option[String] = None,
+        consistency: Option[ConsistencyMode] = None,
+        retry: Boolean = false
+      ): Future[Indexed[Seq[ServiceNode]]] =
+        Future.value(Indexed[Seq[ServiceNode]](Seq(testServiceNode), Some("1")))
+
+    }
+
+    val stats = new InMemoryStatsReceiver
+    val namer = ConsulNamer.untagged(
+      Path.read("/test"),
+      new TestApi(),
+      new TestAgentApi("acme.co"),
+      setHost = false,
+      stats = stats
+    )
+
+    assert(numCalls == 0)
+
+    val interpreter = ConfiguredDtabNamer(Activity.value(Dtab.empty), Seq(Path.read("/#/io.l5d.consul") -> namer))
+    interpreter.bind(Dtab.empty, Path.read("/#/io.l5d.consul/dc1/servicename/residual")).states respond { _ => }
+
+    assert(numCalls == 1)
+    failToConnect.setDone()
+    assert(numCalls == 2)
+  }
+
   test("Namer filters by tag (case-insensitive)") {
     class TestApi extends CatalogApi(null, "/v1") {
       override def serviceMap(

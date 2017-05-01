@@ -1,7 +1,7 @@
 package io.buoyant.namer.consul
 
 import com.twitter.finagle.stats.StatsReceiver
-import com.twitter.finagle.{Addr, Failure}
+import com.twitter.finagle.{ConnectionFailedException, Addr, Failure}
 import com.twitter.util._
 import io.buoyant.consul.v1
 
@@ -62,7 +62,14 @@ private[consul] object DcServices {
             // may consider retrying certain failures (with backoff).
             state() = Activity.Failed(e)
             stats.errors.incr()
-            Future.exception(e)
+            log.debug("consul connection failed: %s", name)
+
+            e match {
+              case Failure(Some(err: ConnectionFailedException)) =>
+                loop(index0, cache)
+              case _ =>
+                Future.exception(e)
+            }
 
           case Return(v1.Indexed(_, None)) =>
             // If consul didn't give us an index, all bets are off.
